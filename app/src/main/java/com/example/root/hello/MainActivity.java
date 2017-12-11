@@ -41,6 +41,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.Arrays;
+import java.util.HashMap;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -90,8 +91,14 @@ public class MainActivity extends AppCompatActivity {
         if (!dir.exists()) {
             dir.mkdirs();
         }
-
         manager = (UsbManager) getSystemService(Context.USB_SERVICE);
+        HashMap<String, UsbDevice> deviceList = manager.getDeviceList();
+        if (deviceList != null) {
+            for (String s : deviceList.keySet()) {
+                device_add = deviceList.get(s);
+            }
+        }
+
         pendingIntent = PendingIntent.getBroadcast(this, 0, new Intent(ACTION_USB_PERMISSION), 0);
         IntentFilter usbDeviceStateFilter = new IntentFilter();
         usbDeviceStateFilter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
@@ -123,13 +130,13 @@ public class MainActivity extends AppCompatActivity {
             if (ACTION_USB_PERMISSION.equals(action)) {
                 synchronized (this) {
                     UsbDevice device = (UsbDevice) intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
-                    try{
+                    try {
                         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
                             String productName = device.getProductName();
-                            tv.append("当前设备型号："+productName);
+                            tv.append("当前设备型号：" + productName);
                         }
-                    }catch (Exception e){
-                        tv.append("e="+ e.getMessage());
+                    } catch (Exception e) {
+                        tv.append("e=" + e.getMessage());
                     }
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                         if (device != null) {

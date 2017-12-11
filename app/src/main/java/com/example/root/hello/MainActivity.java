@@ -117,12 +117,16 @@ public class MainActivity extends AppCompatActivity {
                     ToastUtil.showShort(MainActivity.this, "没有设备连接！");
                     return;
                 }
+                //申请读取usb设备的权限
                 manager.requestPermission(device_add, pendingIntent);
 
             }
         });
     }
 
+    /**
+     * 收到权限回调
+     */
     BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -151,8 +155,7 @@ public class MainActivity extends AppCompatActivity {
                             }
                         }
                     } else {
-                        ToastUtil.showShort(MainActivity.this, "用户不允许USB访问设备，程序退出！");
-                        finish();
+                        ToastUtil.showShort(MainActivity.this, "权限拒绝，请重试！");
                     }
                 }
             }

@@ -13,11 +13,13 @@ import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.hardware.usb.UsbConstants;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbEndpoint;
 import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
+import android.hardware.usb.UsbRequest;
 import android.mtp.MtpConstants;
 import android.mtp.MtpDevice;
 import android.mtp.MtpDeviceInfo;
@@ -50,20 +52,27 @@ import android.widget.Toast;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
 
 public class MainActivity extends AppCompatActivity {
 
     private static final String ACTION_USB_PERMISSION = "com.example.root.hello.USB_PERMISSION";
-    private TextView tv;
+    private static TextView tv;
     private ImageView iv;
     private PendingIntent pendingIntent;
     private UsbManager manager;
     private static File dir;
     private static Activity activity;
+    private static StringBuffer sb = new StringBuffer();
+    private static MtpDevice mtpDevice;
+    private static Button btn;
+    private static boolean isConn;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -75,8 +84,9 @@ public class MainActivity extends AppCompatActivity {
         iv = (ImageView) findViewById(R.id.iv);
         tv = (TextView) findViewById(R.id.tv);
         tv.setMovementMethod(ScrollingMovementMethod.getInstance());
-        Button btn = (Button) findViewById(R.id.button);
+        btn = (Button) findViewById(R.id.button);
         CrashHandler.getInstance().init(this);
+
         if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.MANAGE_DOCUMENTS) != PackageManager.PERMISSION_GRANTED &&
                 ActivityCompat.shouldShowRequestPermissionRationale(MainActivity.this, Manifest.permission.MANAGE_DOCUMENTS)) {
             ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.MANAGE_DOCUMENTS}, 1);
@@ -102,6 +112,7 @@ public class MainActivity extends AppCompatActivity {
         if (deviceList != null) {
             for (String s : deviceList.keySet()) {
                 device_add = deviceList.get(s);
+                isConn=device_add!=null;
             }
         }
 
@@ -112,6 +123,7 @@ public class MainActivity extends AppCompatActivity {
         //otg插入 播出广播
         registerReceiver(mUsbReceiver, usbDeviceStateFilter);//这里我用的碎片
 
+        //注册读取usb设备权限的广播，申请的结果包含在intent里
         registerReceiver(receiver, new IntentFilter(ACTION_USB_PERMISSION));
         btn.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -143,10 +155,10 @@ public class MainActivity extends AppCompatActivity {
             String action = intent.getAction();
             if (ACTION_USB_PERMISSION.equals(action)) {
                 synchronized (this) {
-                    UsbDevice device = (UsbDevice) intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                    device_add = (UsbDevice) intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
                     try {
                         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-                            String productName = device.getProductName();
+                            String productName = device_add.getProductName();
                             tv.append("当前设备型号：" + productName);
                             if (!dir.exists()) {
                                 dir.mkdirs();
@@ -156,17 +168,40 @@ public class MainActivity extends AppCompatActivity {
                         tv.append("e=" + e.getMessage());
                     }
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                        if (device != null) {
+                        if (device_add != null) {
                             ToastUtil.showShort(MainActivity.this, "允许USB访问设备！");
-                            UsbDeviceConnection usbDeviceConnection = manager.openDevice(device);
+                            UsbDeviceConnection usbDeviceConnection = manager.openDevice(device_add);
 
                             if (usbDeviceConnection == null) {
-                                ToastUtil.showShort(MainActivity.this, "打开设备失败！");
+                                ToastUtil.showShort(MainActivity.this, "设备连接失败！");
                             } else {
-                                MtpDevice mtpDevice = new MtpDevice(device);
+                                mtpDevice = new MtpDevice(device_add);
+                                mtpDevice.close();
                                 boolean open = mtpDevice.open(usbDeviceConnection);
+                                if (open) {
+                                    /*try {
+                                        int interfaceCount = device_add.getInterfaceCount();
+                                        int endpointCount = device_add.getInterface(0).getEndpointCount();
+                                        UsbEndpoint endpoint=null;
+                                        for (int i = 0; i < device_add.getInterface(0).getEndpointCount(); i++) {
+                                            if(device_add.getInterface(0).getEndpoint(i).getType()== UsbConstants.USB_ENDPOINT_XFER_BULK){
+                                                endpoint=device_add.getInterface(0).getEndpoint(i);
+                                                break;
+                                            }
+                                        }
+                                        tv.append(",interfaceCount="+interfaceCount+",endpointCount="+endpointCount+",endpoint="+endpoint);
+                                        boolean b = usbDeviceConnection.claimInterface(device_add.getInterface(0), true);
+                                        tv.append("b="+b);
+                                        new Thread(new Runn(usbDeviceConnection,endpoint)).start();
+                                    } catch (Exception e) {
+                                        e.printStackTrace();
+                                        tv.append("错误："+e.getMessage());
+                                    }*/
+                                    new SlideShowImageTask().execute(mtpDevice);
+                                } else {
+                                    ToastUtil.showShort(MainActivity.this, "设备打开失败！");
+                                }
 //                                handler.postDelayed(new MyRunnable(mtpDevice), 0);
-                                new SlideShowImageTask().execute(mtpDevice);
                             }
                         }
                     } else {
@@ -176,19 +211,48 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     };
-
-    private class MyRunnable implements Runnable {
-        private final MtpDevice mtpDevice;
-
-        public MyRunnable(MtpDevice mtpDevice) {
-            this.mtpDevice = mtpDevice;
+    int len;
+    private class Runn implements Runnable{
+        UsbDeviceConnection conn;
+        UsbEndpoint endpointIn;
+        public Runn(UsbDeviceConnection conn,UsbEndpoint endpoint) {
+            this.conn=conn;
+            this.endpointIn=endpoint;
         }
+        @Override
+        public void run() {
+            while (true) {
+                synchronized (this) {
+                    UsbRequest request = new UsbRequest();
+                    request.initialize(conn, endpointIn);
+                    ByteBuffer buffer = ByteBuffer.allocate(514);
+                    request.queue(buffer, 514);
+                    final byte[] data = buffer.array();
+                    final int i = conn.bulkTransfer(endpointIn, data, 514, 0);
+                    if(i ==0){
+                        len+=data.length;
+                    }
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+//                            tv.append("收到数据大小："+len+"\n");
+                            tv.append("I="+i+"\n");
+                        }
+                    });
+                    /*if (conn.requestWait().equals(request)) {
+
+                    }*/
+                }
+
+            }
+        }
+    }
+    private static class MyRunnable implements Runnable {
 
         @Override
         public void run() {
             //每搁5秒刷新文件
-//            handler.postDelayed(this,5000);
-            new SlideShowImageTask().execute(mtpDevice);
+            btn.performClick();
         }
     }
 
@@ -201,6 +265,7 @@ public class MainActivity extends AppCompatActivity {
                 case UsbManager.ACTION_USB_DEVICE_ATTACHED://接收到存储设备插入广播
                     device_add = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
                     if (device_add != null) {
+                        isConn=true;
                         //TShow("接收到存储设备插入广播");
                     }
                     break;
@@ -208,6 +273,7 @@ public class MainActivity extends AppCompatActivity {
                     UsbDevice device_remove = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
                     if (device_remove != null) {
                         //TShow("接收到存储设备拔出广播");
+                        isConn=false;
                     }
                     break;
             }
@@ -372,25 +438,34 @@ public class MainActivity extends AppCompatActivity {
         @Override
         protected void onPostExecute(Integer integer) {
             super.onPostExecute(integer);
-            if(dir.exists()){
+            if (dir.exists()) {
                 File[] files = dir.listFiles();
+//                sb.append("files.size=" + files.length);
                 for (File file : files) {
-                    if(maps.size()==0){
-                        maps.put(file.getName(),BitmapFactory.decodeFile(file.getAbsolutePath()));
-                    }else{
+                    if (maps.size() == 0) {
+                        maps.put(file.getName(), file.getAbsolutePath());
+                    } else {
                         for (String s : maps.keySet()) {
-                            if(!file.getName().equals(s)){
-                                maps.put(file.getName(),BitmapFactory.decodeFile(file.getAbsolutePath()));
+                            if (!file.getName().equals(s)) {
+                                maps.put(file.getName(), file.getAbsolutePath());
                             }
                         }
                     }
                 }
             }
+            for (String s : maps.keySet()) {
+                if (!keys.contains(s)) {
+                    keys.add(s);
+                }
+            }
+//            sb.append("keys.size="+keys.size());
+//            tv.append(sb.toString());
             adapter.notifyDataSetChanged();
+//            handler.postDelayed(new MyRunnable(), 20000);
         }
     }
 
-    private static void getBitmap(final MtpObjectInfo mtpObjectInfo, byte[] rawObject) {
+   /* private static void getBitmap(final MtpObjectInfo mtpObjectInfo, byte[] rawObject) {
         Bitmap bitmap = null;
         if (rawObject != null) {
             BitmapFactory.Options options = new BitmapFactory.Options();
@@ -413,18 +488,17 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         }
-    }
+    }*/
 
-    static HashMap<String, Bitmap> maps = new HashMap<>();
-
-
+    static LinkedHashMap<String, String> maps = new LinkedHashMap<>();
+    static ArrayList<String> keys = new ArrayList<>();
     static MyAdapter adapter = new MyAdapter();
 
     private static class MyAdapter extends BaseAdapter {
 
         @Override
         public int getCount() {
-            return maps.size();
+            return keys.size();
         }
 
         @Override
@@ -441,15 +515,17 @@ public class MainActivity extends AppCompatActivity {
         public View getView(int position, View convertView, ViewGroup parent) {
             VH vh = null;
             if (convertView == null) {
-                vh = new VH(convertView = View.inflate(activity, R.layout.item, null));
+                convertView = View.inflate(activity, R.layout.item, null);
+                vh = new VH(convertView);
                 convertView.setTag(vh);
             } else {
                 vh = (VH) convertView.getTag();
             }
-            for (String s : maps.keySet()) {
-                vh.tv.setText("名字：" + s);
-                vh.iv.setImageBitmap(maps.get(s));
-            }
+            String name = keys.get(position);
+            String path = maps.get(name);
+//            tv.append("name="+name+",path="+path+"\n");
+            vh.tv.setText(name);
+            vh.iv.setImageBitmap(BitmapFactory.decodeFile(path));
             return convertView;
         }
     }

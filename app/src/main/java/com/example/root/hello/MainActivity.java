@@ -15,24 +15,34 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
+import android.hardware.usb.UsbEndpoint;
+import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
 import android.mtp.MtpConstants;
 import android.mtp.MtpDevice;
 import android.mtp.MtpDeviceInfo;
 import android.mtp.MtpObjectInfo;
+import android.mtp.MtpStorageInfo;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
 import android.os.SystemClock;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
+import android.provider.MediaStore;
 import android.support.v4.app.ActivityCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.text.method.ScrollingMovementMethod;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -40,8 +50,10 @@ import android.widget.Toast;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -51,8 +63,6 @@ public class MainActivity extends AppCompatActivity {
     private PendingIntent pendingIntent;
     private UsbManager manager;
     private static File dir;
-    private static ScrollView sv;
-    private static LinearLayout ll;
     private static Activity activity;
 
     @Override
@@ -60,20 +70,16 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         activity = this;
-        sv = (ScrollView) findViewById(R.id.sv);
-        ll = (LinearLayout) findViewById(R.id.ll);
-        CrashHandler.getInstance().init(this);
-        Button btn = (Button) findViewById(R.id.button);
+        ListView lv = (ListView) findViewById(R.id.lv);
+        lv.setAdapter(adapter);
         iv = (ImageView) findViewById(R.id.iv);
         tv = (TextView) findViewById(R.id.tv);
         tv.setMovementMethod(ScrollingMovementMethod.getInstance());
+        Button btn = (Button) findViewById(R.id.button);
+        CrashHandler.getInstance().init(this);
         if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.MANAGE_DOCUMENTS) != PackageManager.PERMISSION_GRANTED &&
                 ActivityCompat.shouldShowRequestPermissionRationale(MainActivity.this, Manifest.permission.MANAGE_DOCUMENTS)) {
             ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.MANAGE_DOCUMENTS}, 1);
-        }
-        if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED &&
-                ActivityCompat.shouldShowRequestPermissionRationale(MainActivity.this, Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
-            ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 2);
         }
         if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED &&
                 ActivityCompat.shouldShowRequestPermissionRationale(MainActivity.this, Manifest.permission.READ_EXTERNAL_STORAGE)) {
@@ -110,8 +116,9 @@ public class MainActivity extends AppCompatActivity {
         btn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (!dir.exists()) {
-                    dir.mkdirs();
+                if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED &&
+                        ActivityCompat.shouldShowRequestPermissionRationale(MainActivity.this, Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+                    ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 2);
                 }
                 if (device_add == null) {
                     ToastUtil.showShort(MainActivity.this, "没有设备连接！");
@@ -128,6 +135,9 @@ public class MainActivity extends AppCompatActivity {
      * 收到权限回调
      */
     BroadcastReceiver receiver = new BroadcastReceiver() {
+
+        private UsbInterface usbInterface;
+
         @Override
         public void onReceive(Context context, Intent intent) {
             String action = intent.getAction();
@@ -138,6 +148,9 @@ public class MainActivity extends AppCompatActivity {
                         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
                             String productName = device.getProductName();
                             tv.append("当前设备型号：" + productName);
+                            if (!dir.exists()) {
+                                dir.mkdirs();
+                            }
                         }
                     } catch (Exception e) {
                         tv.append("e=" + e.getMessage());
@@ -146,11 +159,13 @@ public class MainActivity extends AppCompatActivity {
                         if (device != null) {
                             ToastUtil.showShort(MainActivity.this, "允许USB访问设备！");
                             UsbDeviceConnection usbDeviceConnection = manager.openDevice(device);
+
                             if (usbDeviceConnection == null) {
                                 ToastUtil.showShort(MainActivity.this, "打开设备失败！");
                             } else {
                                 MtpDevice mtpDevice = new MtpDevice(device);
                                 boolean open = mtpDevice.open(usbDeviceConnection);
+//                                handler.postDelayed(new MyRunnable(mtpDevice), 0);
                                 new SlideShowImageTask().execute(mtpDevice);
                             }
                         }
@@ -161,6 +176,23 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     };
+
+    private class MyRunnable implements Runnable {
+        private final MtpDevice mtpDevice;
+
+        public MyRunnable(MtpDevice mtpDevice) {
+            this.mtpDevice = mtpDevice;
+        }
+
+        @Override
+        public void run() {
+            //每搁5秒刷新文件
+//            handler.postDelayed(this,5000);
+            new SlideShowImageTask().execute(mtpDevice);
+        }
+    }
+
+    private static Handler handler = new Handler();
     private UsbDevice device_add;
     private final BroadcastReceiver mUsbReceiver = new BroadcastReceiver() {
         public void onReceive(Context context, Intent intent) {
@@ -250,14 +282,12 @@ public class MainActivity extends AppCompatActivity {
             if (storageIds == null) {
                 return null;
             }
-
             /*
              * scan each storage
              */
             for (int storageId : storageIds) {
                 scanObjectsInStorage(mtpDevice, storageId, 0, 0);
             }
-
             /* close MTP device */
             mtpDevice.close();
             return null;
@@ -303,6 +333,7 @@ public class MainActivity extends AppCompatActivity {
                             FileOutputStream fos = new FileOutputStream(new File(dir, mtpObjectInfo.getName()));
                             fos.write(rawObject, 0, rawObject.length);
                             fos.close();
+//                            getBitmap(mtpObjectInfo, rawObject);
                         } else {
                             for (File file : files) {
                                 if (mtpObjectInfo.getName().equals(file.getName())) {
@@ -311,34 +342,20 @@ public class MainActivity extends AppCompatActivity {
                                     FileOutputStream fos = new FileOutputStream(new File(dir, mtpObjectInfo.getName()));
                                     fos.write(rawObject, 0, rawObject.length);
                                     fos.close();
+//                                    getBitmap(mtpObjectInfo, rawObject);
                                 }
                             }
                         }
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
-                    Bitmap bitmap = null;
-                    if (rawObject != null) {
-                        BitmapFactory.Options options = new BitmapFactory.Options();
-                        int scaleW = (mtpObjectInfo.getImagePixWidth() - 1) / 600 + 1;
-                        int scaleH = (mtpObjectInfo.getImagePixHeight() - 1) / 600 + 1;
-                        int scale = Math.max(scaleW, scaleH);
-                        if (scale > 0) {
-                            options.inSampleSize = scale;
-                            bitmap = BitmapFactory.decodeByteArray(rawObject, 0, rawObject.length, options);
-                        }
-                    }
-                    if (bitmap != null) {
-                        /* show the bitmap in UI thread */
-                        ll.setTag(mtpObjectInfo);
-                        publishProgress(bitmap);
-                    }
                 }
             }
         }
 
-        @Override
+       /* @Override
         protected void onProgressUpdate(Bitmap... values) {
+            adapter.notifyDataSetChanged();
             MtpObjectInfo mtpObjectInfo = (MtpObjectInfo) ll.getTag();
             View view = View.inflate(activity, R.layout.item, null);
             Bitmap bitmap = values[0];
@@ -350,6 +367,100 @@ public class MainActivity extends AppCompatActivity {
             iv.setImageBitmap(bitmap);
             ll.addView(view);
             super.onProgressUpdate(values);
+        }*/
+
+        @Override
+        protected void onPostExecute(Integer integer) {
+            super.onPostExecute(integer);
+            if(dir.exists()){
+                File[] files = dir.listFiles();
+                for (File file : files) {
+                    if(maps.size()==0){
+                        maps.put(file.getName(),BitmapFactory.decodeFile(file.getAbsolutePath()));
+                    }else{
+                        for (String s : maps.keySet()) {
+                            if(!file.getName().equals(s)){
+                                maps.put(file.getName(),BitmapFactory.decodeFile(file.getAbsolutePath()));
+                            }
+                        }
+                    }
+                }
+            }
+            adapter.notifyDataSetChanged();
+        }
+    }
+
+    private static void getBitmap(final MtpObjectInfo mtpObjectInfo, byte[] rawObject) {
+        Bitmap bitmap = null;
+        if (rawObject != null) {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            int scaleW = (mtpObjectInfo.getImagePixWidth() - 1) / 600 + 1;
+            int scaleH = (mtpObjectInfo.getImagePixHeight() - 1) / 600 + 1;
+            int scale = Math.max(scaleW, scaleH);
+            if (scale > 0) {
+                options.inSampleSize = scale;
+                bitmap = BitmapFactory.decodeByteArray(rawObject, 0, rawObject.length, options);
+            }
+        }
+        if (bitmap != null) {
+            if (maps.size() == 0) {
+                maps.put(mtpObjectInfo.getName(), bitmap);
+            } else {
+                for (String s : maps.keySet()) {
+                    if (!mtpObjectInfo.getName().equals(s)) {
+                        maps.put(mtpObjectInfo.getName(), bitmap);
+                    }
+                }
+            }
+        }
+    }
+
+    static HashMap<String, Bitmap> maps = new HashMap<>();
+
+
+    static MyAdapter adapter = new MyAdapter();
+
+    private static class MyAdapter extends BaseAdapter {
+
+        @Override
+        public int getCount() {
+            return maps.size();
+        }
+
+        @Override
+        public Object getItem(int position) {
+            return null;
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return 0;
+        }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            VH vh = null;
+            if (convertView == null) {
+                vh = new VH(convertView = View.inflate(activity, R.layout.item, null));
+                convertView.setTag(vh);
+            } else {
+                vh = (VH) convertView.getTag();
+            }
+            for (String s : maps.keySet()) {
+                vh.tv.setText("名字：" + s);
+                vh.iv.setImageBitmap(maps.get(s));
+            }
+            return convertView;
+        }
+    }
+
+    static class VH {
+        private ImageView iv;
+        private TextView tv;
+
+        public VH(View view) {
+            iv = (ImageView) view.findViewById(R.id.iv);
+            tv = (TextView) view.findViewById(R.id.text);
         }
     }
 }
